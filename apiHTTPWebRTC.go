@@ -1,12 +1,24 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
+	"strings"
 	"time"
 
 	webrtc "github.com/deepch/vdk/format/webrtcv3"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+// WebRTCRequest is the JSON request body for the WebRTC endpoint.
+// Clients may POST either form-encoded data (legacy) or JSON with optional ICE server overrides.
+type WebRTCRequest struct {
+	Data          string       `json:"data"`
+	ICEServers    []string     `json:"ice_servers,omitempty"`
+	ICEUsername   string       `json:"ice_username,omitempty"`
+	ICECredential string       `json:"ice_credential,omitempty"`
+}
 
 // HTTPAPIServerStreamWebRTC stream video over WebRTC
 func HTTPAPIServerStreamWebRTC(c *gin.Context) {
@@ -43,22 +55,44 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 		return
 	}
 
-	options := webrtc.Options{
-	    ICEServers:    Storage.ServerICEServers(),
-	    ICEUsername:   Storage.ServerICEUsername(),
-	    ICECredential: Storage.ServerICECredential(),
-	    PortMin:       Storage.ServerWebRTCPortMin(),
-	    PortMax:       Storage.ServerWebRTCPortMax(),
+	// Parse request: try JSON first, fall back to form-encoded "data" field
+	var req WebRTCRequest
+	sdpData := ""
+	contentType := c.GetHeader("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		body, err := io.ReadAll(c.Request.Body)
+		if err == nil {
+			json.Unmarshal(body, &req)
+			sdpData = req.Data
+		}
 	}
-	
-	//Ensures that ice_candidates is optional
+	if sdpData == "" {
+		sdpData = c.PostForm("data")
+	}
+
+	// Build WebRTC options: use client-provided ICE servers if present, otherwise fall back to server config
+	options := webrtc.Options{
+		ICEServers:    Storage.ServerICEServers(),
+		ICEUsername:   Storage.ServerICEUsername(),
+		ICECredential: Storage.ServerICECredential(),
+		PortMin:       Storage.ServerWebRTCPortMin(),
+		PortMax:       Storage.ServerWebRTCPortMax(),
+	}
 	if len(Storage.ServerICECandidates()) > 0 {
-	    options.ICECandidates = Storage.ServerICECandidates()
+		options.ICECandidates = Storage.ServerICECandidates()
+	}
+	if len(req.ICEServers) > 0 {
+		options.ICEServers = req.ICEServers
+		options.ICEUsername = req.ICEUsername
+		options.ICECredential = req.ICECredential
+		requestLogger.WithFields(logrus.Fields{
+			"call": "ClientICEServers",
+		}).Debugln("Using client-provided ICE servers")
 	}
 
 	muxerWebRTC := webrtc.NewMuxer(options)
 
-	answer, err := muxerWebRTC.WriteHeader(codecs, c.PostForm("data"))
+	answer, err := muxerWebRTC.WriteHeader(codecs, sdpData)
 	if err != nil {
 		c.IndentedJSON(400, Message{Status: 0, Payload: err.Error()})
 		requestLogger.WithFields(logrus.Fields{
