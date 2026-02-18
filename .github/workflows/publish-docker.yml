@@ -1,4 +1,4 @@
-name: Create and publish Docker image
+name: Create and publish Docker image to spaneng ghcr
 
 on:
   push:
