@@ -5,6 +5,7 @@ go 1.24.0
 toolchain go1.26.0
 
 require (
+	github.com/asticode/go-astiav v0.41.0
 	github.com/deepch/vdk v0.0.27
 	github.com/gin-gonic/autotls v1.2.2
 	github.com/gin-gonic/gin v1.11.0
@@ -17,6 +18,7 @@ require (
 )
 
 require (
+	github.com/asticode/go-astikit v0.42.0 // indirect
 	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect

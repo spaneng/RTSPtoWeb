@@ -1,22 +1,29 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=${BUILDPLATFORM} golang:1.26-alpine AS builder
+# Build natively per target arch. The WebRTC AAC->Opus transcoder uses cgo
+# (go-astiav -> ffmpeg), and cgo can't easily cross-compile the ffmpeg C libs,
+# so we drop BUILDPLATFORM cross-compilation and let buildx build each arch
+# natively (emulated). apk then installs the matching-arch ffmpeg headers/libs.
+FROM golang:1.26-alpine AS builder
 
-RUN apk add git
+# git for `go get`; gcc/musl-dev/pkgconf + ffmpeg-dev for the cgo transcoder.
+RUN apk add --no-cache git gcc musl-dev pkgconf ffmpeg-dev
 
 WORKDIR /go/src/app
 COPY . .
 
-ARG TARGETOS TARGETARCH TARGETVARIANT
-
-ENV CGO_ENABLED=0
+ENV CGO_ENABLED=1
 RUN go get \
     && go mod download \
-    && GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#"v"} go build -a -o rtsp-to-web
+    && go build -o rtsp-to-web
 
 FROM alpine:3.23
 
 WORKDIR /app
+
+# Runtime shared libraries for the cgo transcoder
+# (libavcodec/avutil/swresample + libopus, pulled in by ffmpeg-libs).
+RUN apk add --no-cache ffmpeg-libs
 
 COPY --from=builder /go/src/app/rtsp-to-web /app/
 COPY --from=builder /go/src/app/web /app/web

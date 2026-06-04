@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepch/vdk/av"
 	webrtc "github.com/deepch/vdk/format/webrtcv3"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -14,10 +15,10 @@ import (
 // WebRTCRequest is the JSON request body for the WebRTC endpoint.
 // Clients may POST either form-encoded data (legacy) or JSON with optional ICE server overrides.
 type WebRTCRequest struct {
-	Data          string       `json:"data"`
-	ICEServers    []string     `json:"ice_servers,omitempty"`
-	ICEUsername   string       `json:"ice_username,omitempty"`
-	ICECredential string       `json:"ice_credential,omitempty"`
+	Data          string   `json:"data"`
+	ICEServers    []string `json:"ice_servers,omitempty"`
+	ICEUsername   string   `json:"ice_username,omitempty"`
+	ICECredential string   `json:"ice_credential,omitempty"`
 }
 
 // HTTPAPIServerStreamWebRTC stream video over WebRTC
@@ -53,6 +54,32 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 			"call": "StreamCodecs",
 		}).Errorln(err.Error())
 		return
+	}
+
+	// The WebRTC muxer can't carry AAC (e.g. UniFi cameras), so transcode it to
+	// Opus before the muxer sees it. Copy the codec slice first — it's shared
+	// stream state and the MSE/HLS paths must keep their native AAC.
+	codecs = append([]av.CodecData(nil), codecs...)
+	var audioTC *audioTranscoder
+	for i, cd := range codecs {
+		if cd == nil || cd.Type() != av.AAC {
+			continue
+		}
+		ac, ok := cd.(av.AudioCodecData)
+		if !ok {
+			continue
+		}
+		tc, terr := newAudioTranscoder(ac, int8(i))
+		if terr != nil {
+			// Fall back to video-only; the muxer would have dropped AAC anyway.
+			requestLogger.WithFields(logrus.Fields{
+				"call": "newAudioTranscoder",
+			}).Errorln(terr.Error())
+			break
+		}
+		audioTC = tc
+		codecs[i] = opusWebRTCCodecData()
+		break
 	}
 
 	// Parse request: try JSON first, fall back to form-encoded "data" field
@@ -94,6 +121,9 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 
 	answer, err := muxerWebRTC.WriteHeader(codecs, sdpData)
 	if err != nil {
+		if audioTC != nil {
+			audioTC.Close()
+		}
 		c.IndentedJSON(400, Message{Status: 0, Payload: err.Error()})
 		requestLogger.WithFields(logrus.Fields{
 			"call": "WriteHeader",
@@ -102,6 +132,9 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 	}
 	_, err = c.Writer.Write([]byte(answer))
 	if err != nil {
+		if audioTC != nil {
+			audioTC.Close()
+		}
 		c.IndentedJSON(400, Message{Status: 0, Payload: err.Error()})
 		requestLogger.WithFields(logrus.Fields{
 			"call": "Write",
@@ -120,6 +153,9 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 		}
 		defer Storage.ClientDelete(safeContext.Param("uuid"), cid, safeContext.Param("channel"))
 		defer muxerWebRTC.Close() // Close the WebRTC session when done
+		if audioTC != nil {
+			defer audioTC.Close()
+		}
 		var videoStart bool
 		noVideo := time.NewTimer(10 * time.Second)
 		for {
@@ -145,6 +181,25 @@ func HTTPAPIServerStreamWebRTC(c *gin.Context) {
 					videoStart = true
 				}
 				if !videoStart {
+					continue
+				}
+				// Transcode AAC audio to Opus before the muxer (which can't carry AAC).
+				if audioTC != nil && pck.Idx == audioTC.idx {
+					opkts, terr := audioTC.transcode(*pck)
+					if terr != nil {
+						requestLogger.WithFields(logrus.Fields{
+							"call": "audioTranscode",
+						}).Errorln(terr.Error())
+						continue
+					}
+					for i := range opkts {
+						if err = muxerWebRTC.WritePacket(opkts[i]); err != nil {
+							requestLogger.WithFields(logrus.Fields{
+								"call": "WritePacket",
+							}).Errorln(err.Error())
+							return
+						}
+					}
 					continue
 				}
 				err = muxerWebRTC.WritePacket(*pck)
