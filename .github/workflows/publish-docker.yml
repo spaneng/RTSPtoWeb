@@ -46,3 +46,22 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (key-pair, offline-verifiable)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.DOOVER_PUBLIC_COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ""
+          COSIGN_EXPERIMENTAL: "1"
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # Sign by digest (covers every tag pointing at this manifest) with
+          # the tlog upload disabled so the app controller can verify fully
+          # offline on edge devices.
+          cosign sign --yes --tlog-upload=false --registry-referrers-mode oci-1-1 \
+            --key env://COSIGN_PRIVATE_KEY \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
