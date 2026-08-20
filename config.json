@@ -17,6 +17,8 @@
     "ice_servers": ["stun:stun.l.google.com:19302"],
     "log_level": "debug",
     "rtsp_port": ":5541",
+    "webrtc_port_min": 52000,
+    "webrtc_port_max": 52100,
     "token": {
       "backend": "http://127.0.0.1/test.php"
     },
